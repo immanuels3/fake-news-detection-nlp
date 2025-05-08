@@ -80,6 +80,8 @@ def validate_input_text(text):
 @st.cache_data
 def load_dataset(fake_path='data/Fake.csv', true_path='data/True.csv', sample_size=1000):
     try:
+        logger.info(f"Looking for Fake.csv at: {fake_path}")
+        logger.info(f"Looking for True.csv at: {true_path}")
         df_fake = pd.read_csv(fake_path, encoding='utf-8')
         df_true = pd.read_csv(true_path, encoding='utf-8')
 
@@ -117,15 +119,22 @@ def load_dataset(fake_path='data/Fake.csv', true_path='data/True.csv', sample_si
         logger.error(f"Error loading dataset: {e}")
         return None
 
-# Load models
+# Load models with debugging
 @st.cache_resource
 def load_models(path='models/'):
     try:
+        logger.info(f"Current working directory: {os.getcwd()}")
+        logger.info(f"Looking for vectorizer at: {os.path.join(path, 'vectorizer.pkl')}")
         vectorizer = joblib.load(f'{path}vectorizer.pkl')
+        logger.info(f"Vectorizer loaded successfully: {type(vectorizer)}")
+        
+        logger.info(f"Looking for model at: {os.path.join(path, 'Ensemble.pkl')}")
         model = joblib.load(f'{path}Ensemble.pkl')
+        logger.info(f"Ensemble model loaded successfully: {type(model)}")
+        
         transformer_model = pipeline("text-classification", 
-                                  model="distilbert-base-uncased-finetuned-sst-2-english")
-        logger.info("Models loaded successfully")
+                                 model="distilbert-base-uncased-finetuned-sst-2-english")
+        logger.info("Transformer model loaded successfully")
         return model, vectorizer, transformer_model
     except Exception as e:
         logger.error(f"Error loading models: {e}")
@@ -159,7 +168,7 @@ def plot_confusion_matrix(y_true, y_pred):
 
 # Main app
 def main():
-    # Custom CSS for styling (moved here since st.set_page_config is now at the top)
+    # Custom CSS for styling
     st.markdown("""
     <style>
     .main {
@@ -270,7 +279,7 @@ def main():
         # Load dataset
         df = load_dataset()
         
-        if df is not None:
+        if df is not None\Psi:
             st.write("Dataset Preview")
             st.dataframe(df.head())
             
@@ -286,7 +295,7 @@ def main():
                     df['date'] = pd.to_datetime(df['date'], errors='coerce')
                     if not df['date'].isna().all():
                         st.write("Articles Over Time")
-                        time_df = df.set_index('date').resample('ME').size()
+                        time_df = df.set_index('date').resample('M').size()
                         fig, ax = plt.subplots(figsize=(10, 4))
                         time_df.plot(ax=ax)
                         st.pyplot(fig)
