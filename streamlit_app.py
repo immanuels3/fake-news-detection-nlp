@@ -14,10 +14,20 @@ from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 import nltk
+import sys
+import importlib.util
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Check for PyTorch and TensorFlow availability
+def check_backends():
+    pytorch_available = importlib.util.find_spec("torch") is not None
+    tensorflow_available = importlib.util.find_spec("tensorflow") is not None
+    logger.info(f"PyTorch available: {pytorch_available}")
+    logger.info(f"TensorFlow available: {tensorflow_available}")
+    return pytorch_available, tensorflow_available
 
 # Download NLTK resources
 nltk.download(['punkt', 'punkt_tab', 'stopwords', 'wordnet'], quiet=True)
@@ -94,6 +104,11 @@ def load_dataset(fake_path='data/Fake.csv', true_path='data/True.csv', sample_si
 @st.cache_resource
 def load_models(path='models/'):
     try:
+        # Check backend availability
+        pytorch_available, tensorflow_available = check_backends()
+        if not (pytorch_available or tensorflow_available):
+            raise ImportError("Neither PyTorch nor TensorFlow is installed. Please install one of them.")
+
         vectorizer = joblib.load(f'{path}vectorizer.pkl')
         models = {
             'Logistic Regression': joblib.load(f'{path}Logistic_Regression.pkl'),
@@ -107,11 +122,12 @@ def load_models(path='models/'):
         return models, vectorizer, transformer_model
     except Exception as e:
         logger.error(f"Error loading models: {e}")
-        st.error(f"Error loading models: {str(e)}")
+        st.error(f"Error loading models: {str(e)}. Ensure all model files are in 'models/' and PyTorch or TensorFlow is installed.")
         return None, None, None
 
 # Explain predictions
 def explain_prediction(text, model, vectorizer):
+    from lime.lime_text import LimeTextExplainer
     explainer = LimeTextExplainer(class_names=["True", "Fake"])
     def predict_prob(texts):
         return model.predict_proba(vectorizer.transform(texts))
@@ -262,7 +278,7 @@ def main():
                         fig = plot_word_cloud(cleaned_text)
                         st.pyplot(fig)
                     else:
-                        st.error("Error: Could not load models. Please ensure all model files (Logistic_Regression.pkl, Random_Forest.pkl, XGBoost.pkl, Ensemble.pkl, vectorizer.pkl) are in the 'models/' directory.")
+                        st.error("Error: Could not load models. Ensure all model files (Logistic_Regression.pkl, Random_Forest.pkl, XGBoost.pkl, Ensemble.pkl, vectorizer.pkl) are in the 'models/' directory.")
             else:
                 st.warning("Please enter a news article to analyze.")
 
