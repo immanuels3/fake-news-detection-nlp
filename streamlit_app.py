@@ -107,6 +107,7 @@ def load_models(path='models/'):
         return models, vectorizer, transformer_model
     except Exception as e:
         logger.error(f"Error loading models: {e}")
+        st.error(f"Error loading models: {str(e)}")
         return None, None, None
 
 # Explain predictions
@@ -261,7 +262,7 @@ def main():
                         fig = plot_word_cloud(cleaned_text)
                         st.pyplot(fig)
                     else:
-                        st.error("Error: Could not load models. Please ensure all model files are in the 'models/' directory.")
+                        st.error("Error: Could not load models. Please ensure all model files (Logistic_Regression.pkl, Random_Forest.pkl, XGBoost.pkl, Ensemble.pkl, vectorizer.pkl) are in the 'models/' directory.")
             else:
                 st.warning("Please enter a news article to analyze.")
 
@@ -288,7 +289,7 @@ def main():
                     df['date'] = pd.to_datetime(df['date'], errors='coerce')
                     if not df['date'].isna().all():
                         st.write("Articles Over Time")
-                        time_df = df.set_index('date').resample('M').size()
+                        time_df = df.set_index('date').resample('ME').size()
                         fig, ax = plt.subplots(figsize=(10, 4))
                         time_df.plot(ax=ax)
                         st.pyplot(fig)
