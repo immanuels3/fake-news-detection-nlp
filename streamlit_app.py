@@ -279,7 +279,7 @@ def main():
         # Load dataset
         df = load_dataset()
         
-        if df is not None\Psi:
+        if df is not None:
             st.write("Dataset Preview")
             st.dataframe(df.head())
             

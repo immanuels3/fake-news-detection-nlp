@@ -9,3 +9,4 @@ lime
 matplotlib
 seaborn
 wordcloud
+xgboost
