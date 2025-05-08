@@ -14,13 +14,35 @@ from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 import nltk
+from lime.lime_text import LimeTextExplainer  # Import LimeTextExplainer
+import os
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Download NLTK resources
-nltk.download(['punkt', 'punkt_tab', 'stopwords', 'wordnet'], quiet=True)
+# Set NLTK data path explicitly
+nltk_data_path = os.path.join(os.getcwd(), "nltk_data")
+os.makedirs(nltk_data_path, exist_ok=True)
+nltk.data.path.append(nltk_data_path)
+
+# Download NLTK resources with error handling
+@st.cache_resource
+def download_nltk_resources():
+    resources = ['punkt', 'punkt_tab', 'stopwords', 'wordnet']
+    try:
+        for resource in resources:
+            if not os.path.exists(os.path.join(nltk_data_path, resource)):
+                logger.info(f"Downloading NLTK resource: {resource}")
+                nltk.download(resource, download_dir=nltk_data_path, quiet=True)
+            else:
+                logger.info(f"NLTK resource {resource} already exists.")
+    except Exception as e:
+        logger.error(f"Error downloading NLTK resources: {e}")
+        raise
+
+# Call the download function
+download_nltk_resources()
 
 # Enhanced text preprocessing
 def preprocess_text(text):
