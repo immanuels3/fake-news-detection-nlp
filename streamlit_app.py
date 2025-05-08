@@ -286,7 +286,7 @@ def main():
                     df['date'] = pd.to_datetime(df['date'], errors='coerce')
                     if not df['date'].isna().all():
                         st.write("Articles Over Time")
-                        time_df = df.set_index('date').resample('M').size()
+                        time_df = df.set_index('date').resample('ME').size()
                         fig, ax = plt.subplots(figsize=(10, 4))
                         time_df.plot(ax=ax)
                         st.pyplot(fig)
