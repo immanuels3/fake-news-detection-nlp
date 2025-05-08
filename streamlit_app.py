@@ -14,6 +14,7 @@ from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 import nltk
+from lime.lime_text import LimeTextExplainer  # Import LimeTextExplainer
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -90,12 +91,15 @@ def load_dataset(fake_path='data/Fake.csv', true_path='data/True.csv', sample_si
         logger.error(f"Error loading dataset: {e}")
         return None
 
-# Load models
+# Load models using uploaded files
 @st.cache_resource
-def load_models(path='models/'):
+def load_models(vectorizer_file, ensemble_file):
     try:
-        vectorizer = joblib.load(f'{path}vectorizer.pkl')
-        model = joblib.load(f'{path}Ensemble.pkl')
+        if vectorizer_file is None or ensemble_file is None:
+            return None, None, None
+
+        vectorizer = joblib.load(vectorizer_file)
+        model = joblib.load(ensemble_file)
         transformer_model = pipeline("text-classification", 
                                   model="distilbert-base-uncased-finetuned-sst-2-english")
         logger.info("Models loaded successfully")
@@ -174,7 +178,11 @@ def main():
         st.title("TruthGuard")
         st.markdown("Advanced Fake News Detection System")
         st.markdown("---")
-        st.info("Enter a news article to analyze or view dataset visualizations.")
+        st.info("Upload your pre-trained models or enter a news article to analyze.")
+
+        # File upload widgets for models
+        ensemble_file = st.file_uploader("Upload Ensemble model (Ensemble.pkl)", type=["pkl"], help="Limit 200MB per file • PKL")
+        vectorizer_file = st.file_uploader("Upload Vectorizer (vectorizer.pkl)", type=["pkl"], help="Limit 200MB per file • PKL")
 
     # Main content
     st.title("🔍 TruthGuard: Fake News Detection")
@@ -188,15 +196,17 @@ def main():
         news_text = st.text_area("Paste your news article here:", height=200)
         
         if st.button("Analyze Article"):
-            if news_text:
+            if not vectorizer_file or not ensemble_file:
+                st.error("Please upload both the Ensemble model (Ensemble.pkl) and Vectorizer (vectorizer.pkl) files in the sidebar before analyzing.")
+            elif news_text:
                 is_valid, error_msg = validate_input_text(news_text)
                 if not is_valid:
                     st.error(error_msg)
                 else:
                     cleaned_text = preprocess_text(news_text)
                     
-                    # Load models
-                    model, vectorizer, transformer_model = load_models()
+                    # Load models using uploaded files
+                    model, vectorizer, transformer_model = load_models(vectorizer_file, ensemble_file)
                     
                     if model and vectorizer and transformer_model:
                         # Transformer prediction
@@ -236,7 +246,7 @@ def main():
                         fig = plot_word_cloud(cleaned_text)
                         st.pyplot(fig)
                     else:
-                        st.error("Error: Could not load models. Please ensure model files are in the 'models/' directory.")
+                        st.error("Error: Could not load models. Please ensure the uploaded model files are valid.")
             else:
                 st.warning("Please enter a news article to analyze.")
 
