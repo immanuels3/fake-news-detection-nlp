@@ -21,6 +21,11 @@ import os
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Set page config as the FIRST Streamlit command
+st.set_page_config(page_title="TruthGuard: Fake News Detection", 
+                   page_icon="🔍", 
+                   layout="wide")
+
 # Set NLTK data path explicitly
 nltk_data_path = os.path.join(os.getcwd(), "nltk_data")
 os.makedirs(nltk_data_path, exist_ok=True)
@@ -41,7 +46,7 @@ def download_nltk_resources():
         logger.error(f"Error downloading NLTK resources: {e}")
         raise
 
-# Call the download function
+# Call the download function AFTER st.set_page_config
 download_nltk_resources()
 
 # Enhanced text preprocessing
@@ -154,11 +159,7 @@ def plot_confusion_matrix(y_true, y_pred):
 
 # Main app
 def main():
-    st.set_page_config(page_title="TruthGuard: Fake News Detection", 
-                      page_icon="🔍", 
-                      layout="wide")
-
-    # Custom CSS for styling
+    # Custom CSS for styling (moved here since st.set_page_config is now at the top)
     st.markdown("""
     <style>
     .main {
