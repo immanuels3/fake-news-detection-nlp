@@ -14,40 +14,13 @@ from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 import nltk
-from lime.lime_text import LimeTextExplainer  # Import LimeTextExplainer
-import os
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Set page config as the FIRST Streamlit command
-st.set_page_config(page_title="TruthGuard: Fake News Detection", 
-                   page_icon="🔍", 
-                   layout="wide")
-
-# Set NLTK data path explicitly
-nltk_data_path = os.path.join(os.getcwd(), "nltk_data")
-os.makedirs(nltk_data_path, exist_ok=True)
-nltk.data.path.append(nltk_data_path)
-
-# Download NLTK resources with error handling
-@st.cache_resource
-def download_nltk_resources():
-    resources = ['punkt', 'punkt_tab', 'stopwords', 'wordnet']
-    try:
-        for resource in resources:
-            if not os.path.exists(os.path.join(nltk_data_path, resource)):
-                logger.info(f"Downloading NLTK resource: {resource}")
-                nltk.download(resource, download_dir=nltk_data_path, quiet=True)
-            else:
-                logger.info(f"NLTK resource {resource} already exists.")
-    except Exception as e:
-        logger.error(f"Error downloading NLTK resources: {e}")
-        raise
-
-# Call the download function AFTER st.set_page_config
-download_nltk_resources()
+# Download NLTK resources
+nltk.download(['punkt', 'punkt_tab', 'stopwords', 'wordnet'], quiet=True)
 
 # Enhanced text preprocessing
 def preprocess_text(text):
@@ -80,8 +53,6 @@ def validate_input_text(text):
 @st.cache_data
 def load_dataset(fake_path='data/Fake.csv', true_path='data/True.csv', sample_size=1000):
     try:
-        logger.info(f"Looking for Fake.csv at: {fake_path}")
-        logger.info(f"Looking for True.csv at: {true_path}")
         df_fake = pd.read_csv(fake_path, encoding='utf-8')
         df_true = pd.read_csv(true_path, encoding='utf-8')
 
@@ -119,23 +90,21 @@ def load_dataset(fake_path='data/Fake.csv', true_path='data/True.csv', sample_si
         logger.error(f"Error loading dataset: {e}")
         return None
 
-# Load models with debugging
+# Load all models
 @st.cache_resource
 def load_models(path='models/'):
     try:
-        logger.info(f"Current working directory: {os.getcwd()}")
-        logger.info(f"Looking for vectorizer at: {os.path.join(path, 'vectorizer.pkl')}")
         vectorizer = joblib.load(f'{path}vectorizer.pkl')
-        logger.info(f"Vectorizer loaded successfully: {type(vectorizer)}")
-        
-        logger.info(f"Looking for model at: {os.path.join(path, 'Ensemble.pkl')}")
-        model = joblib.load(f'{path}Ensemble.pkl')
-        logger.info(f"Ensemble model loaded successfully: {type(model)}")
-        
+        models = {
+            'Logistic Regression': joblib.load(f'{path}Logistic_Regression.pkl'),
+            'Random Forest': joblib.load(f'{path}Random_Forest.pkl'),
+            'XGBoost': joblib.load(f'{path}XGBoost.pkl'),
+            'Ensemble': joblib.load(f'{path}Ensemble.pkl')
+        }
         transformer_model = pipeline("text-classification", 
-                                 model="distilbert-base-uncased-finetuned-sst-2-english")
-        logger.info("Transformer model loaded successfully")
-        return model, vectorizer, transformer_model
+                                  model="distilbert-base-uncased-finetuned-sst-2-english")
+        logger.info("All models loaded successfully")
+        return models, vectorizer, transformer_model
     except Exception as e:
         logger.error(f"Error loading models: {e}")
         return None, None, None
@@ -168,6 +137,10 @@ def plot_confusion_matrix(y_true, y_pred):
 
 # Main app
 def main():
+    st.set_page_config(page_title="TruthGuard: Fake News Detection", 
+                      page_icon="🔍", 
+                      layout="wide")
+
     # Custom CSS for styling
     st.markdown("""
     <style>
@@ -228,9 +201,9 @@ def main():
                     cleaned_text = preprocess_text(news_text)
                     
                     # Load models
-                    model, vectorizer, transformer_model = load_models()
+                    models, vectorizer, transformer_model = load_models()
                     
-                    if model and vectorizer and transformer_model:
+                    if models and vectorizer and transformer_model:
                         # Transformer prediction
                         with st.spinner("Analyzing with Transformer model..."):
                             result = transformer_model(news_text[:512])[0]
@@ -243,32 +216,52 @@ def main():
                                   f"<b>Confidence:</b> {confidence:.2%}"
                                   f"</div>", unsafe_allow_html=True)
                         
-                        # Traditional model prediction
-                        with st.spinner("Analyzing with Ensemble model..."):
-                            vectorized_text = vectorizer.transform([cleaned_text])
-                            trad_prediction = model.predict(vectorized_text)[0]
-                            trad_proba = model.predict_proba(vectorized_text)[0]
+                        # Traditional models prediction
+                        st.markdown("### Traditional Models Comparison")
+                        vectorized_text = vectorizer.transform([cleaned_text])
                         
-                        st.markdown("### Ensemble Model Results")
-                        st.markdown(f"<div class='prediction-box'>"
-                                  f"<b>Prediction:</b> {'Fake' if trad_prediction == 1 else 'True'}<br>"
-                                  f"<b>Probability (True):</b> {trad_proba[0]:.2%}<br>"
-                                  f"<b>Probability (Fake):</b> {trad_proba[1]:.2%}"
-                                  f"</div>", unsafe_allow_html=True)
+                        # Store results for table
+                        results = []
+                        for model_name, model in models.items():
+                            with st.spinner(f"Analyzing with {model_name}..."):
+                                prediction = model.predict(vectorized_text)[0]
+                                proba = model.predict_proba(vectorized_text)[0]
+                                results.append({
+                                    'Model': model_name,
+                                    'Prediction': 'Fake' if prediction == 1 else 'True',
+                                    'Probability (True)': f"{proba[0]:.2%}",
+                                    'Probability (Fake)': f"{proba[1]:.2%}"
+                                })
                         
-                        # Explain predictions
-                        st.markdown("### Feature Importance")
-                        with st.spinner("Generating explanation..."):
-                            explanation = explain_prediction(cleaned_text, model, vectorizer)
-                            exp_df = pd.DataFrame(explanation, columns=['Feature', 'Weight'])
-                            st.dataframe(exp_df.style.format({'Weight': '{:.3f}'}))
+                        # Display results table
+                        st.write("#### Prediction Summary")
+                        results_df = pd.DataFrame(results)
+                        st.dataframe(results_df.style.set_properties(**{'text-align': 'center'}))
+                        
+                        # Detailed results for each model
+                        for model_name, model in models.items():
+                            st.markdown(f"#### {model_name} Results")
+                            prediction = model.predict(vectorized_text)[0]
+                            proba = model.predict_proba(vectorized_text)[0]
+                            st.markdown(f"<div class='prediction-box'>"
+                                      f"<b>Prediction:</b> {'Fake' if prediction == 1 else 'True'}<br>"
+                                      f"<b>Probability (True):</b> {proba[0]:.2%}<br>"
+                                      f"<b>Probability (Fake):</b> {proba[1]:.2%}"
+                                      f"</div>", unsafe_allow_html=True)
+                            
+                            # Explain predictions
+                            st.markdown(f"##### Feature Importance ({model_name})")
+                            with st.spinner(f"Generating explanation for {model_name}..."):
+                                explanation = explain_prediction(cleaned_text, model, vectorizer)
+                                exp_df = pd.DataFrame(explanation, columns=['Feature', 'Weight'])
+                                st.dataframe(exp_df.style.format({'Weight': '{:.3f}'}))
                         
                         # Word cloud
                         st.markdown("### Word Cloud")
                         fig = plot_word_cloud(cleaned_text)
                         st.pyplot(fig)
                     else:
-                        st.error("Error: Could not load models. Please ensure model files are in the 'models/' directory.")
+                        st.error("Error: Could not load models. Please ensure all model files are in the 'models/' directory.")
             else:
                 st.warning("Please enter a news article to analyze.")
 
