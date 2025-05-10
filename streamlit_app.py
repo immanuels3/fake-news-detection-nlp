@@ -1,334 +1,182 @@
+# app.py
+# Indian Fake News Detection Web App using Streamlit
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-from transformers import BertTokenizer, BertForSequenceClassification, Trainer, TrainingArguments
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-import torch
-from torch.utils.data import Dataset
 import re
-import nltk
-from nltk.corpus import stopwords
+import joblib
+import os
+import glob
+import logging
+import matplotlib.pyplot as plt
+import seaborn as sns
+from wordcloud import WordCloud
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics import confusion_matrix, roc_curve, auc
+from transformers import pipeline
 from nltk.tokenize import word_tokenize
-import io
-import warnings
-import streamlit.watcher.local_sources_watcher as watcher
-warnings.filterwarnings('ignore')
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+import nltk
+from lime.lime_text import LimeTextExplainer
 
-# Patch Streamlit's LocalSourcesWatcher to skip torch module
-def patch_watcher():
-    original_get_module_paths = watcher.get_module_paths
-    def safe_get_module_paths(module):
-        if module.__name__.startswith('torch'):
-            return []
-        return original_get_module_paths(module)
-    watcher.get_module_paths = safe_get_module_paths
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-patch_watcher()
+# Set NLTK data path and download resources
+nltk.data.path.append('./nltk_data')
+try:
+    nltk.download(['punkt', 'punkt_tab', 'stopwords', 'wordnet'], download_dir='./nltk_data', quiet=True)
+    logger.info("NLTK resources downloaded successfully")
+except Exception as e:
+    logger.error(f"Error downloading NLTK resources: {e}")
+    st.error(f"Error downloading NLTK resources: {e}")
 
-# Download NLTK resources with error handling
-def download_nltk_resources():
-    try:
-        nltk.download('punkt', quiet=True)
-        nltk.download('punkt_tab', quiet=True)
-        nltk.download('stopwords', quiet=True)
-        st.info("NLTK resources downloaded successfully.")
-    except Exception as e:
-        st.error(f"Error downloading NLTK resources: {e}")
-        raise
-
-download_nltk_resources()
-
-# Custom Dataset class for PyTorch
-class NewsDataset(Dataset):
-    def __init__(self, texts, labels, tokenizer, max_len=128):
-        self.texts = texts
-        self.labels = labels
-        self.tokenizer = tokenizer
-        self.max_len = max_len
-
-    def __len__(self):
-        return len(self.texts)
-
-    def __getitem__(self, idx):
-        text = str(self.texts[idx])
-        label = self.labels[idx]
-
-        encoding = self.tokenizer.encode_plus(
-            text,
-            add_special_tokens=True,
-            max_length=self.max_len,
-            return_token_type_ids=False,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt'
-        )
-
-        return {
-            'input_ids': encoding['input_ids'].flatten(),
-            'attention_mask': encoding['attention_mask'].flatten(),
-            'labels': torch.tensor(label, dtype=torch.long)
-        }
-
-# Text preprocessing function
+# Text preprocessing
 def preprocess_text(text):
-    # Handle non-string inputs (e.g., float, NaN)
-    if not isinstance(text, str) or pd.isna(text):
-        return ""
-    # Convert to lowercase
-    text = text.lower()
-    # Remove URLs
+    if not isinstance(text, str):
+        return ''
     text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
-    # Remove special characters and numbers
-    text = re.sub(r'[^a-zA-Z\s]', '', text)
-    # Tokenization
-    tokens = word_tokenize(text)
-    # Remove stopwords
-    stop_words = set(stopwords.words('english'))
-    tokens = [token for token in tokens if token not in stop_words]
+    text = re.sub(r'\@\w+|\#', '', text)
+    text = re.sub(r'[^\w\s]', '', text)
+    text = re.sub(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF]', '', text)
+    text = re.sub(r'\d+', 'NUMBER', text)
+    try:
+        tokens = word_tokenize(text.lower())
+    except Exception as e:
+        logger.error(f"Tokenization error: {e}")
+        return ''
+    lemmatizer = WordNetLemmatizer()
+    tokens = [lemmatizer.lemmatize(token) for token in tokens
+             if token not in stopwords.words('english') and len(token) > 2]
     return ' '.join(tokens)
 
-# Load and prepare dataset from uploaded file
-def load_dataset(uploaded_file):
-    if uploaded_file is None:
-        st.warning("Please upload a CSV file.")
-        return None
+# Validate input text
+def validate_input_text(text):
+    if not text or len(text.strip()) < 10:
+        return False, "Input text is too short or empty. Please provide a valid news article."
+    return True, ""
 
-    # Load CSV from uploaded file
-    try:
-        df = pd.read_csv(uploaded_file)
-    except Exception as e:
-        st.error(f"Error loading dataset: {e}")
-        return None
-
-    # Verify columns
-    if 'text' not in df.columns or 'label' not in df.columns:
-        st.error("Dataset must contain 'text' and 'label' columns.")
-        return None
-
-    # Clean text column: convert to string, handle NaN
-    df['text'] = df['text'].astype(str).replace('nan', '')
-    
-    # Validate labels
-    valid_labels = {'FAKE', 'REAL'}
-    if not df['label'].isin(valid_labels).all():
-        st.error("Label column must contain only 'FAKE' or 'REAL' values.")
-        return None
-
-    # Preprocess texts
-    try:
-        df['text'] = df['text'].apply(preprocess_text)
-    except Exception as e:
-        st.error(f"Error preprocessing text: {e}")
-        return None
-    
-    # Map labels: FAKE=0, REAL=1
-    df['label'] = df['label'].map({'FAKE': 0, 'REAL': 1})
-    
-    # Drop rows with empty text after preprocessing
-    df = df[df['text'].str.strip() != '']
-    df = df.dropna(subset=['text', 'label'])
-    
-    if df.empty:
-        st.error("No valid data after preprocessing. Ensure 'text' column contains valid strings.")
-        return None
-    
-    return df
-
-# Compute metrics for evaluation
-def compute_metrics(pred):
-    labels = pred.label_ids
-    preds = pred.predictions.argmax(-1)
-    precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average='binary')
-    acc = accuracy_score(labels, preds)
-    return {
-        'accuracy': acc,
-        'f1': f1,
-        'precision': precision,
-        'recall': recall
-    }
-
-# Train and evaluate model
+# Load models
 @st.cache_resource
-def train_and_evaluate_model(_uploaded_file):
-    # Load dataset
-    df = load_dataset(_uploaded_file)
-    if df is None:
-        return None, None, None
-    
-    # Split dataset: 80% train, 20% test
+def load_models(path='models/'):
     try:
-        train_df, test_df = train_test_split(
-            df,
-            test_size=0.2,
-            random_state=42,
-            stratify=df['label']
-        )
+        vectorizer = joblib.load(f'{path}vectorizer.pkl')
+        model_files = glob.glob(f'{path}*.pkl')
+        models = {}
+        for file in model_files:
+            name = os.path.basename(file).replace('.pkl', '').replace('_', ' ')
+            if name != 'vectorizer':
+                models[name] = {'model': joblib.load(file)}
+        if not models:
+            st.error("No pre-trained models found in the specified directory.")
+            return None, None
+        logger.info("Models loaded successfully")
+        return models, vectorizer
     except Exception as e:
-        st.error(f"Error splitting dataset: {e}")
-        return None, None, None
+        logger.error(f"Error loading models: {e}")
+        st.error(f"Error loading models: {e}")
+        return None, None
 
-    train_texts = train_df['text'].values
-    train_labels = train_df['label'].values
-    test_texts = test_df['text'].values
-    test_labels = test_df['label'].values
-
-    # Initialize tokenizer and model
+# Load transformer model
+@st.cache_resource
+def load_transformer_model():
     try:
-        tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-        model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=2)
+        model_name = "distilbert-base-uncased-finetuned-sst-2-english"
+        transformer = pipeline("text-classification", model=model_name)
+        logger.info("Transformer model loaded successfully")
+        return transformer
     except Exception as e:
-        st.error(f"Error initializing model: {e}")
-        return None, None, None
-
-    # Create datasets
-    train_dataset = NewsDataset(train_texts, train_labels, tokenizer)
-    test_dataset = NewsDataset(test_texts, test_labels, tokenizer)
-
-    # Training arguments
-    training_args = TrainingArguments(
-        output_dir='./results',
-        num_train_epochs=3,
-        per_device_train_batch_size=8,
-        per_device_eval_batch_size=8,
-        warmup_steps=500,
-        weight_decay=0.01,
-        logging_dir='./logs',
-        logging_steps=10,
-        evaluation_strategy='epoch',
-        save_strategy='epoch',
-        load_best_model_at_end=True
-    )
-
-    # Initialize trainer
-    try:
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=test_dataset,
-            compute_metrics=compute_metrics
-        )
-    except Exception as e:
-        st.error(f"Error initializing trainer: {e}")
-        return None, None, None
-
-    # Train model
-    try:
-        trainer.train()
-    except Exception as e:
-        st.error(f"Error training model: {e}")
-        return None, None, None
-
-    # Evaluate on test set
-    try:
-        eval_results = trainer.evaluate()
-        st.write(f"**Test Set Evaluation Results:**")
-        st.write(f"- Accuracy: {eval_results['eval_accuracy']:.4f}")
-        st.write(f"- F1 Score: {eval_results['eval_f1']:.4f}")
-        st.write(f"- Precision: {eval_results['eval_precision']:.4f}")
-        st.write(f"- Recall: {eval_results['eval_recall']:.4f}")
-    except Exception as e:
-        st.error(f"Error evaluating model: {e}")
-        return None, None, None
-
-    # Save model and tokenizer
-    try:
-        model.save_pretrained('./fake_news_model')
-        tokenizer.save_pretrained('./fake_news_model')
-    except Exception as e:
-        st.error(f"Error saving model: {e}")
-        return None, None, None
-
-    return model, tokenizer, eval_results
-
-# Prediction function
-def predict_fake_news(text, model, tokenizer):
-    try:
-        # Preprocess input text
-        processed_text = preprocess_text(text)
-        if not processed_text.strip():
-            st.warning("Input text is empty after preprocessing.")
-            return None
-        
-        # Tokenize input
-        encoding = tokenizer.encode_plus(
-            processed_text,
-            add_special_tokens=True,
-            max_length=128,
-            return_token_type_ids=False,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt'
-        )
-        
-        # Get predictions
-        with torch.no_grad():
-            outputs = model(
-                input_ids=encoding['input_ids'],
-                attention_mask=encoding['attention_mask']
-            )
-            logits = outputs.logits
-            prediction = torch.argmax(logits, dim=1).item()
-        
-        return "Real News" if prediction == 1 else "Fake News"
-    except Exception as e:
-        st.error(f"Error making prediction: {e}")
+        logger.error(f"Error loading transformer model: {e}")
+        st.error(f"Error loading transformer model: {e}")
         return None
 
-# Streamlit app
+# Explain predictions using LIME
+def explain_prediction(text, model, vectorizer):
+    explainer = LimeTextExplainer(class_names=["Real", "Fake"])
+    def predict_proba(texts):
+        return model.predict_proba(vectorizer.transform(texts))
+    exp = explainer.explain_instance(text, predict_proba, num_features=10)
+    return exp.as_list()
+
+# Visualization functions
+def plot_word_cloud(text):
+    wordcloud = WordCloud(width=800, height=400, background_color='white').generate(text)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.imshow(wordcloud, interpolation='bilinear')
+    ax.set_title("Word Cloud of Processed Text", fontsize=16)
+    ax.axis('off')
+    return fig
+
+# Streamlit UI
 def main():
-    st.title("Indian Fake News Detector")
-    st.markdown(
-        """
-        Upload the `news_dataset.csv` file (with 'text' and 'label' columns) to train the model.  
-        Then, enter a news article text to check if it's real or fake.  
-        Built for Indian news context using BERT and NLP.  
-        The model is trained on 80% of the dataset and evaluated on 20%.  
-        **Note**: Ensure the 'text' column contains valid strings and 'label' contains only 'FAKE' or 'REAL'.
-        """
-    )
+    st.set_page_config(page_title="IndiaTruthGuard", page_icon="🔍")
+    st.title("🔍 IndiaTruthGuard: Indian Fake News Detection")
+    st.markdown("Enter a news article to detect if it's **Real** or **Fake**. Powered by advanced NLP models.")
 
-    # File uploader
-    uploaded_file = st.file_uploader("Upload news_dataset.csv", type="csv")
+    # Sidebar for configuration
+    st.sidebar.header("Configuration")
+    model_path = st.sidebar.text_input("Model Directory", "models/")
+    st.sidebar.info("Ensure pre-trained models and vectorizer are saved in the specified directory.")
 
-    # Initialize session state for model and tokenizer
-    if 'model' not in st.session_state:
-        st.session_state.model = None
-        st.session_state.tokenizer = None
-        st.session_state.eval_results = None
+    # Load models
+    models, vectorizer = load_models(model_path)
+    transformer_model = load_transformer_model()
 
-    # Train model if file is uploaded
-    if uploaded_file is not None and st.session_state.model is None:
-        with st.spinner("Training model... This may take a few minutes."):
-            try:
-                model, tokenizer, eval_results = train_and_evaluate_model(uploaded_file)
-                if model is not None:
-                    st.session_state.model = model
-                    st.session_state.tokenizer = tokenizer
-                    st.session_state.eval_results = eval_results
-                    st.success("Model trained successfully!")
-                else:
-                    st.error("Failed to train model. Please check the dataset.")
-            except Exception as e:
-                st.error(f"Error training model: {e}")
-
-    # Prediction interface
-    if st.session_state.model is not None:
-        st.subheader("Check News Article")
-        user_input = st.text_area("Enter news article text:", placeholder="Paste the news article here...", height=200)
-        if st.button("Check News"):
-            if user_input.strip():
-                with st.spinner("Analyzing..."):
-                    prediction = predict_fake_news(user_input, st.session_state.model, st.session_state.tokenizer)
-                    if prediction:
-                        st.success(f"Prediction: **{prediction}**")
+    # Input text area
+    news_text = st.text_area("Enter News Article Text", height=200, placeholder="Paste the news article here...")
+    
+    if st.button("Analyze"):
+        if news_text.strip():
+            is_valid, error_msg = validate_input_text(news_text)
+            if not is_valid:
+                st.error(error_msg)
             else:
-                st.warning("Please enter some text to analyze.")
-    else:
-        st.info("Please upload the dataset to train the model before making predictions.")
+                st.subheader("Analysis Results")
+                cleaned_text = preprocess_text(news_text)
 
-if __name__ == "__main__":
+                # Display processed text
+                with st.expander("Processed Text"):
+                    st.write(cleaned_text)
+
+                # Transformer model prediction
+                if transformer_model:
+                    result = transformer_model(news_text[:512])[0]
+                    prediction = "Fake" if result['label'] == "NEGATIVE" else "Real"
+                    confidence = result['score']
+
+                    st.subheader("Transformer Model (DistilBERT) Results")
+                    st.write(f"**Prediction**: {prediction}")
+                    st.write(f"**Confidence**: {confidence:.2%}")
+
+                    # Word cloud
+                    st.subheader("Word Cloud")
+                    fig = plot_word_cloud(cleaned_text)
+                    st.pyplot(fig)
+
+                # Traditional model prediction
+                if models and vectorizer:
+                    st.subheader("Traditional Model Results")
+                    vectorized_text = vectorizer.transform([cleaned_text])
+                    best_model_name = max(models.items(), key=lambda x: x[1].get('metrics', {}).get('f1', 0))[0]
+                    best_model_obj = models[best_model_name]['model']
+                    trad_prediction = best_model_obj.predict(vectorized_text)[0]
+                    trad_proba = best_model_obj.predict_proba(vectorized_text)[0]
+
+                    st.write(f"**Best Model ({best_model_name}) Prediction**: {'Fake' if trad_prediction == 1 else 'Real'}")
+                    st.write(f"**Probability (Real)**: {trad_proba[0]:.2%}")
+                    st.write(f"**Probability (Fake)**: {trad_proba[1]:.2%}")
+
+                    # LIME explanation
+                    st.subheader("Explanation (Traditional Model)")
+                    explanation = explain_prediction(cleaned_text, best_model_obj, vectorizer)
+                    st.write("**Top features influencing this prediction**:")
+                    for feature, weight in explanation:
+                        st.write(f"- {feature}: {weight:.3f}")
+        else:
+            st.warning("Please enter a news article to analyze.")
+
+if __name__ == '__main__':
     main()
