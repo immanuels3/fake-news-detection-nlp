@@ -1,0 +1,17 @@
+Feature Engineering:
+Sentiment Score Statistics:
+count    628.000000
+mean       0.024812
+std        0.090547
+min       -0.277941
+25%       -0.030798
+50%        0.020456
+75%        0.073586
+max        0.500000
+
+Name: sentiment, dtype: float64
+
+
+Top 10 TF-IDF Features:
+['according' 'account' 'also' 'also read' 'archive' 'article' 'bank' 'bjp'
+ 'boom' 'caption']

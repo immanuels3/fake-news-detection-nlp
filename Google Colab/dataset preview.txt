@@ -1,0 +1,7 @@
+Dataset Preview:
+label	text	cleaned_text	text_length	cleaned_text_length	sentiment
+2696	1	India's largest English language daily newspap...	india largest english language daily newspaper...	466	271	0.013770
+3470	0	Don’t need Twitter to explain what @anuragkash...	dont need twitter explain mean many woman shar...	266	143	0.138095
+2711	1	A video showing a group of men thrash a youth ...	video showing group men thrash youth interroga...	616	365	-0.085472
+368	1	Here's a round-up of all the factchecks and fa...	here roundup factchecks fake news story past w...	407	241	-0.019028
+787	0	Dubai (UAE): Ahead of the opening clash agains...	dubai uae ahead opening clash royal challenger...	345	174	0.136532

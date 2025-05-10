@@ -1,0 +1,27 @@
+Step 3: Analyze a news article
+Enter the news article text (or paste it here): Pakistan destroyed India’s S-400 system in drone attack.
+
+Analyzing text...
+
+Processed Text:
+pakistan destroyed india snumber system drone attack
+
+Transformer Model Results:
+Prediction: Fake
+Confidence: 99.90%
+
+
+Traditional Model Comparison:
+Best Model (Random Forest) Prediction: Fake
+Probability (Real): 31.00%
+Probability (Fake): 69.00%
+
+Explanation (Traditional Model):
+Top features influencing this prediction:
+india: -0.027
+pakistan: 0.013
+system: -0.010
+snumber: -0.000
+destroyed: -0.000
+drone: -0.000
+attack: -0.000

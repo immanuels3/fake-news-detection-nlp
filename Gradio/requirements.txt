@@ -1,0 +1,14 @@
+gradio
+pandas
+numpy
+regex
+joblib
+matplotlib
+seaborn
+wordcloud
+scikit-learn
+xgboost
+transformers
+nltk
+lime
+torch

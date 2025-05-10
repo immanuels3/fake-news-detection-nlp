@@ -1,0 +1,14 @@
+Statistical Analysis (EDA):
+Class Distribution:
+label
+1    492
+0    136
+Name: count, dtype: int64
+
+
+
+Class Distribution:
+label
+1    492
+0    136
+Name: count, dtype: int64
