@@ -1,7 +1,7 @@
 # app.py
-# Indian Fake News Detection Web App using Streamlit
+# Indian Fake News Detection Web App using Gradio
 
-import streamlit as st
+import gradio as gr
 import pandas as pd
 import numpy as np
 import re
@@ -13,13 +13,14 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from wordcloud import WordCloud
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics import confusion_matrix, roc_curve, auc
 from transformers import pipeline
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 import nltk
 from lime.lime_text import LimeTextExplainer
+import io
+import base64
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -32,7 +33,7 @@ try:
     logger.info("NLTK resources downloaded successfully")
 except Exception as e:
     logger.error(f"Error downloading NLTK resources: {e}")
-    st.error(f"Error downloading NLTK resources: {e}")
+    raise Exception(f"Error downloading NLTK resources: {e}")
 
 # Text preprocessing
 def preprocess_text(text):
@@ -59,29 +60,34 @@ def validate_input_text(text):
         return False, "Input text is too short or empty. Please provide a valid news article."
     return True, ""
 
-# Load models
-@st.cache_resource
+# Load models with enhanced error handling
 def load_models(path='models/'):
     try:
-        vectorizer = joblib.load(f'{path}vectorizer.pkl')
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Model directory '{path}' does not exist.")
+        vectorizer_path = f'{path}vectorizer.pkl'
+        if not os.path.exists(vectorizer_path):
+            raise FileNotFoundError(f"Vectorizer file '{vectorizer_path}' not found.")
+        vectorizer = joblib.load(vectorizer_path)
         model_files = glob.glob(f'{path}*.pkl')
         models = {}
         for file in model_files:
             name = os.path.basename(file).replace('.pkl', '').replace('_', ' ')
             if name != 'vectorizer':
-                models[name] = {'model': joblib.load(file)}
+                try:
+                    models[name] = {'model': joblib.load(file)}
+                except Exception as e:
+                    logger.error(f"Failed to load model {file}: {e}")
+                    continue
         if not models:
-            st.error("No pre-trained models found in the specified directory.")
-            return None, None
+            raise ValueError("No valid pre-trained models found in the specified directory.")
         logger.info("Models loaded successfully")
         return models, vectorizer
     except Exception as e:
         logger.error(f"Error loading models: {e}")
-        st.error(f"Error loading models: {e}")
-        return None, None
+        raise Exception(f"Error loading models: {str(e)}")
 
 # Load transformer model
-@st.cache_resource
 def load_transformer_model():
     try:
         model_name = "distilbert-base-uncased-finetuned-sst-2-english"
@@ -90,8 +96,7 @@ def load_transformer_model():
         return transformer
     except Exception as e:
         logger.error(f"Error loading transformer model: {e}")
-        st.error(f"Error loading transformer model: {e}")
-        return None
+        raise Exception(f"Error loading transformer model: {e}")
 
 # Explain predictions using LIME
 def explain_prediction(text, model, vectorizer):
@@ -101,7 +106,16 @@ def explain_prediction(text, model, vectorizer):
     exp = explainer.explain_instance(text, predict_proba, num_features=10)
     return exp.as_list()
 
-# Visualization functions
+# Convert matplotlib figure to base64 for Gradio
+def fig_to_base64(fig):
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png')
+    buf.seek(0)
+    img_str = base64.b64encode(buf.read()).decode('utf-8')
+    buf.close()
+    return f"data:image/png;base64,{img_str}"
+
+# Visualization function
 def plot_word_cloud(text):
     wordcloud = WordCloud(width=800, height=400, background_color='white').generate(text)
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -110,73 +124,75 @@ def plot_word_cloud(text):
     ax.axis('off')
     return fig
 
-# Streamlit UI
-def main():
-    st.set_page_config(page_title="IndiaTruthGuard", page_icon="🔍")
-    st.title("🔍 IndiaTruthGuard: Indian Fake News Detection")
-    st.markdown("Enter a news article to detect if it's **Real** or **Fake**. Powered by advanced NLP models.")
+# Main prediction function for Gradio
+def analyze_news(news_text):
+    # Validate input
+    is_valid, error_msg = validate_input_text(news_text)
+    if not is_valid:
+        return error_msg, None, None, None
 
-    # Sidebar for configuration
-    st.sidebar.header("Configuration")
-    model_path = st.sidebar.text_input("Model Directory", "models/")
-    st.sidebar.info("Ensure pre-trained models and vectorizer are saved in the specified directory.")
+    # Preprocess text
+    cleaned_text = preprocess_text(news_text)
+    
+    # Initialize outputs
+    results = []
+    word_cloud_img = None
+    lime_explanation = []
 
     # Load models
-    models, vectorizer = load_models(model_path)
-    transformer_model = load_transformer_model()
+    try:
+        models, vectorizer = load_models()
+        transformer_model = load_transformer_model()
+    except Exception as e:
+        return str(e), None, None, None
 
-    # Input text area
-    news_text = st.text_area("Enter News Article Text", height=200, placeholder="Paste the news article here...")
-    
-    if st.button("Analyze"):
-        if news_text.strip():
-            is_valid, error_msg = validate_input_text(news_text)
-            if not is_valid:
-                st.error(error_msg)
-            else:
-                st.subheader("Analysis Results")
-                cleaned_text = preprocess_text(news_text)
+    # Transformer model prediction
+    if transformer_model:
+        result = transformer_model(news_text[:512])[0]
+        prediction = "Fake" if result['label'] == "NEGATIVE" else "Real"
+        confidence = result['score']
+        results.append(f"**Transformer Model (DistilBERT) Prediction**: {prediction}")
+        results.append(f"**Confidence**: {confidence:.2%}")
 
-                # Display processed text
-                with st.expander("Processed Text"):
-                    st.write(cleaned_text)
+    # Traditional model prediction
+    if models and vectorizer:
+        vectorized_text = vectorizer.transform([cleaned_text])
+        best_model_name = max(models.items(), key=lambda x: x[1].get('metrics', {}).get('f1', 0))[0]
+        best_model_obj = models[best_model_name]['model']
+        trad_prediction = best_model_obj.predict(vectorized_text)[0]
+        trad_proba = best_model_obj.predict_proba(vectorized_text)[0]
 
-                # Transformer model prediction
-                if transformer_model:
-                    result = transformer_model(news_text[:512])[0]
-                    prediction = "Fake" if result['label'] == "NEGATIVE" else "Real"
-                    confidence = result['score']
+        results.append(f"**Best Traditional Model ({best_model_name}) Prediction**: {'Fake' if trad_prediction == 1 else 'Real'}")
+        results.append(f"**Probability (Real)**: {trad_proba[0]:.2%}")
+        results.append(f"**Probability (Fake)**: {trad_proba[1]:.2%}")
 
-                    st.subheader("Transformer Model (DistilBERT) Results")
-                    st.write(f"**Prediction**: {prediction}")
-                    st.write(f"**Confidence**: {confidence:.2%}")
+        # LIME explanation
+        lime_explanation = explain_prediction(cleaned_text, best_model_obj, vectorizer)
+        lime_explanation = [f"{feature}: {weight:.3f}" for feature, weight in lime_explanation]
 
-                    # Word cloud
-                    st.subheader("Word Cloud")
-                    fig = plot_word_cloud(cleaned_text)
-                    st.pyplot(fig)
+    # Word cloud
+    word_cloud_fig = plot_word_cloud(cleaned_text)
+    word_cloud_img = fig_to_base64(word_cloud_fig)
+    plt.close(word_cloud_fig)
 
-                # Traditional model prediction
-                if models and vectorizer:
-                    st.subheader("Traditional Model Results")
-                    vectorized_text = vectorizer.transform([cleaned_text])
-                    best_model_name = max(models.items(), key=lambda x: x[1].get('metrics', {}).get('f1', 0))[0]
-                    best_model_obj = models[best_model_name]['model']
-                    trad_prediction = best_model_obj.predict(vectorized_text)[0]
-                    trad_proba = best_model_obj.predict_proba(vectorized_text)[0]
+    return "\n".join(results), cleaned_text, word_cloud_img, lime_explanation
 
-                    st.write(f"**Best Model ({best_model_name}) Prediction**: {'Fake' if trad_prediction == 1 else 'Real'}")
-                    st.write(f"**Probability (Real)**: {trad_proba[0]:.2%}")
-                    st.write(f"**Probability (Fake)**: {trad_proba[1]:.2%}")
-
-                    # LIME explanation
-                    st.subheader("Explanation (Traditional Model)")
-                    explanation = explain_prediction(cleaned_text, best_model_obj, vectorizer)
-                    st.write("**Top features influencing this prediction**:")
-                    for feature, weight in explanation:
-                        st.write(f"- {feature}: {weight:.3f}")
-        else:
-            st.warning("Please enter a news article to analyze.")
+# Gradio interface
+def main():
+    iface = gr.Interface(
+        fn=analyze_news,
+        inputs=gr.Textbox(lines=10, placeholder="Paste the news article here...", label="News Article Text"),
+        outputs=[
+            gr.Markdown(label="Prediction Results"),
+            gr.Textbox(label="Processed Text"),
+            gr.Image(label="Word Cloud"),
+            gr.Textbox(label="LIME Explanation (Top Features)")
+        ],
+        title="🔍 IndiaTruthGuard: Indian Fake News Detection",
+        description="Enter a news article to detect if it's **Real** or **Fake**. Powered by advanced NLP models.",
+        theme="default"
+    )
+    iface.launch(server_name="0.0.0.0", server_port=7860)
 
 if __name__ == '__main__':
     main()
