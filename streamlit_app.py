@@ -10,7 +10,7 @@ import re
 import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
-import os
+import io
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -74,16 +74,15 @@ def preprocess_text(text):
     tokens = [token for token in tokens if token not in stop_words]
     return ' '.join(tokens)
 
-# Load and prepare dataset
-def load_dataset():
-    dataset_path = './data/news_dataset.csv'  # Adjust path as needed
-    if not os.path.exists(dataset_path):
-        st.error(f"Dataset file not found at {dataset_path}")
+# Load and prepare dataset from uploaded file
+def load_dataset(uploaded_file):
+    if uploaded_file is None:
+        st.warning("Please upload a CSV file.")
         return None
 
-    # Load CSV
+    # Load CSV from uploaded file
     try:
-        df = pd.read_csv(dataset_path)
+        df = pd.read_csv(uploaded_file)
     except Exception as e:
         st.error(f"Error loading dataset: {e}")
         return None
@@ -99,6 +98,10 @@ def load_dataset():
     # Map labels: FAKE=0, REAL=1
     df['label'] = df['label'].map({'FAKE': 0, 'REAL': 1})
     df = df.dropna(subset=['text', 'label'])
+    
+    if df.empty:
+        st.error("No valid data after preprocessing. Check your dataset.")
+        return None
     
     return df
 
@@ -117,11 +120,11 @@ def compute_metrics(pred):
 
 # Train and evaluate model
 @st.cache_resource
-def train_and_evaluate_model():
+def train_and_evaluate_model(_uploaded_file):
     # Load dataset
-    df = load_dataset()
+    df = load_dataset(_uploaded_file)
     if df is None:
-        raise ValueError("Failed to load dataset.")
+        return None, None, None
     
     # Split dataset: 80% train, 20% test
     train_df, test_df = train_test_split(
@@ -218,30 +221,50 @@ def main():
     st.title("Indian Fake News Detector")
     st.markdown(
         """
-        Enter a news article text below to check if it's real or fake.  
-        Built for Indian news context using BERT and NLP with the `news_dataset.csv` dataset.  
-        Trained on 80% of the dataset, evaluated on 20% test set.
+        Upload the `news_dataset.csv` file (with 'text' and 'label' columns) to train the model.  
+        Then, enter a news article text to check if it's real or fake.  
+        Built for Indian news context using BERT and NLP.  
+        The model is trained on 80% of the dataset and evaluated on 20%.
         """
     )
 
-    # Train model and cache results
-    try:
-        model, tokenizer, eval_results = train_and_evaluate_model()
-    except Exception as e:
-        st.error(f"Error training model: {e}")
-        return
+    # File uploader
+    uploaded_file = st.file_uploader("Upload news_dataset.csv", type="csv")
 
-    # Input text
-    user_input = st.text_area("Enter news article text:", placeholder="Paste the news article here...", height=200)
+    # Initialize session state for model and tokenizer
+    if 'model' not in st.session_state:
+        st.session_state.model = None
+        st.session_state.tokenizer = None
+        st.session_state.eval_results = None
 
-    # Predict button
-    if st.button("Check News"):
-        if user_input.strip():
-            with st.spinner("Analyzing..."):
-                prediction = predict_fake_news(user_input, model, tokenizer)
-                st.success(f"Prediction: **{prediction}**")
-        else:
-            st.warning("Please enter some text to analyze.")
+    # Train model if file is uploaded
+    if uploaded_file is not None and st.session_state.model is None:
+        with st.spinner("Training model... This may take a few minutes."):
+            try:
+                model, tokenizer, eval_results = train_and_evaluate_model(uploaded_file)
+                if model is not None:
+                    st.session_state.model = model
+                    st.session_state.tokenizer = tokenizer
+                    st.session_state.eval_results = eval_results
+                    st.success("Model trained successfully!")
+                else:
+                    st.error("Failed to train model. Please check the dataset.")
+            except Exception as e:
+                st.error(f"Error training model: {e}")
+
+    # Prediction interface
+    if st.session_state.model is not None:
+        st.subheader("Check News Article")
+        user_input = st.text_area("Enter news article text:", placeholder="Paste the news article here...", height=200)
+        if st.button("Check News"):
+            if user_input.strip():
+                with st.spinner("Analyzing..."):
+                    prediction = predict_fake_news(user_input, st.session_state.model, st.session_state.tokenizer)
+                    st.success(f"Prediction: **{prediction}**")
+            else:
+                st.warning("Please enter some text to analyze.")
+    else:
+        st.info("Please upload the dataset to train the model before making predictions.")
 
 if __name__ == "__main__":
     main()
