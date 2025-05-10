@@ -1,11 +1,7 @@
-gradio
-pandas
-numpy
-scikit-learn
-matplotlib
-seaborn
-wordcloud
-transformers
-nltk
-lime
-joblib
+# requirements.txt
+gradio==4.44.0
+transformers==4.46.0
+torch==2.4.1
+nltk==3.9.1
+wordcloud==1.9.3
+matplotlib==3.9.2
