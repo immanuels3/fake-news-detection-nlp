@@ -1,4 +1,5 @@
-IndiaTruthGuard: Indian Fake News Detection
+**IndiaTruthGuard: Indian Fake News Detection**
+
 Detecting fake news in Indian English articles with advanced NLP techniques.
 IndiaTruthGuard is a machine learning and natural language processing (NLP) powered system designed to classify Indian news articles as Real or Fake. The project addresses the growing challenge of misinformation in the Indian media landscape, providing tools for fact-checkers, journalists, and the public to combat false narratives. It features two main components:
 
@@ -95,8 +96,8 @@ nltk.download(['punkt', 'punkt_tab', 'stopwords', 'wordnet'], download_dir='./nl
 
 Repository Setup
 
-Clone the repository:git clone https://github.com/[your-username]/IndiaTruthGuard.git
-cd IndiaTruthGuard
+Clone the repository: git clone https://github.com/immanuels3/fake-news-detection-nlp
+cd fake-news-detection-nlp
 
 
 Place news_dataset.csv in the root directory (see Dataset).
