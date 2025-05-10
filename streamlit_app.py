@@ -1,318 +1,247 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from transformers import BertTokenizer, BertForSequenceClassification, Trainer, TrainingArguments
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+import torch
+from torch.utils.data import Dataset
 import re
-import joblib
-import logging
-import matplotlib.pyplot as plt
-import seaborn as sns
-from wordcloud import WordCloud
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics import confusion_matrix
-from transformers import pipeline
-from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
 import nltk
-import sys
-import importlib.util
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+import os
+import warnings
+warnings.filterwarnings('ignore')
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# Check for PyTorch and TensorFlow availability
-def check_backends():
-    pytorch_available = importlib.util.find_spec("torch") is not None
-    tensorflow_available = importlib.util.find_spec("tensorflow") is not None
-    logger.info(f"PyTorch available: {pytorch_available}")
-    logger.info(f"TensorFlow available: {tensorflow_available}")
-    return pytorch_available, tensorflow_available
-
-# Download NLTK resources
-nltk.download(['punkt', 'punkt_tab', 'stopwords', 'wordnet'], quiet=True)
-
-# Enhanced text preprocessing
-def preprocess_text(text):
-    if not isinstance(text, str):
-        return ''
-    text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
-    text = re.sub(r'\@\w+|\#', '', text)
-    text = re.sub(r'[^\w\s]', '', text)
-    text = re.sub(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF]', '', text)
-    text = re.sub(r'\d+', 'NUMBER', text)
-    
+# Download NLTK resources with error handling
+def download_nltk_resources():
     try:
-        tokens = word_tokenize(text.lower())
+        nltk.download('punkt', quiet=True)
+        nltk.download('punkt_tab', quiet=True)
+        nltk.download('stopwords', quiet=True)
+        st.info("NLTK resources downloaded successfully.")
     except Exception as e:
-        logger.error(f"Tokenization error: {e}")
-        return ''
-    
-    lemmatizer = WordNetLemmatizer()
-    tokens = [lemmatizer.lemmatize(token) for token in tokens
-             if token not in stopwords.words('english') and len(token) > 2]
+        st.error(f"Error downloading NLTK resources: {e}")
+        raise
+
+download_nltk_resources()
+
+# Custom Dataset class for PyTorch
+class NewsDataset(Dataset):
+    def __init__(self, texts, labels, tokenizer, max_len=128):
+        self.texts = texts
+        self.labels = labels
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, idx):
+        text = str(self.texts[idx])
+        label = self.labels[idx]
+
+        encoding = self.tokenizer.encode_plus(
+            text,
+            add_special_tokens=True,
+            max_length=self.max_len,
+            return_token_type_ids=False,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='pt'
+        )
+
+        return {
+            'input_ids': encoding['input_ids'].flatten(),
+            'attention_mask': encoding['attention_mask'].flatten(),
+            'labels': torch.tensor(label, dtype=torch.long)
+        }
+
+# Text preprocessing function
+def preprocess_text(text):
+    # Convert to lowercase
+    text = text.lower()
+    # Remove URLs
+    text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
+    # Remove special characters and numbers
+    text = re.sub(r'[^a-zA-Z\s]', '', text)
+    # Tokenization
+    tokens = word_tokenize(text)
+    # Remove stopwords
+    stop_words = set(stopwords.words('english'))
+    tokens = [token for token in tokens if token not in stop_words]
     return ' '.join(tokens)
 
-# Validate input text
-def validate_input_text(text):
-    if not text or len(text.strip()) < 10:
-        return False, "Input text is too short or empty. Please provide a valid news article."
-    return True, ""
+# Load and prepare dataset
+def load_dataset():
+    dataset_path = './data/news_dataset.csv'  # Adjust path as needed
+    if not os.path.exists(dataset_path):
+        st.error(f"Dataset file not found at {dataset_path}")
+        return None
 
-# Load dataset
-@st.cache_data
-def load_dataset(fake_path='data/Fake.csv', true_path='data/True.csv', sample_size=1000):
+    # Load CSV
     try:
-        df_fake = pd.read_csv(fake_path, encoding='utf-8')
-        df_true = pd.read_csv(true_path, encoding='utf-8')
-
-        df_fake['label'] = 1
-        df_true['label'] = 0
-
-        if sample_size:
-            df_fake = df_fake.sample(n=min(sample_size//2, len(df_fake)), random_state=42)
-            df_true = df_true.sample(n=min(sample_size//2, len(df_true)), random_state=42)
-
-        required_columns = ['title', 'text', 'subject', 'date']
-        for df in [df_fake, df_true]:
-            if not all(col in df.columns for col in required_columns):
-                logger.error(f"CSV files must contain these columns: {required_columns}")
-                return None
-
-        df = pd.concat([df_fake, df_true], ignore_index=True)
-
-        if not df['label'].isin([0,1]).all():
-            logger.error("Labels must be binary (0 or 1)")
-            return None
-
-        df['title'] = df['title'].fillna('')
-        df['text'] = df['text'].fillna('')
-
-        df['combined_text'] = df['title'] + ' ' + df['text']
-        df['cleaned_text'] = df['combined_text'].apply(preprocess_text)
-
-        logger.info(f"Dataset loaded: {len(df)} articles")
-        return df
-    except FileNotFoundError as e:
-        logger.error(f"One or both dataset files not found: {e}")
-        return None
+        df = pd.read_csv(dataset_path)
     except Exception as e:
-        logger.error(f"Error loading dataset: {e}")
+        st.error(f"Error loading dataset: {e}")
         return None
 
-# Load all models
+    # Verify columns
+    if 'text' not in df.columns or 'label' not in df.columns:
+        st.error("Dataset must contain 'text' and 'label' columns.")
+        return None
+
+    # Preprocess texts
+    df['text'] = df['text'].apply(preprocess_text)
+    
+    # Map labels: FAKE=0, REAL=1
+    df['label'] = df['label'].map({'FAKE': 0, 'REAL': 1})
+    df = df.dropna(subset=['text', 'label'])
+    
+    return df
+
+# Compute metrics for evaluation
+def compute_metrics(pred):
+    labels = pred.label_ids
+    preds = pred.predictions.argmax(-1)
+    precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average='binary')
+    acc = accuracy_score(labels, preds)
+    return {
+        'accuracy': acc,
+        'f1': f1,
+        'precision': precision,
+        'recall': recall
+    }
+
+# Train and evaluate model
 @st.cache_resource
-def load_models(path='models/'):
-    try:
-        # Check backend availability
-        pytorch_available, tensorflow_available = check_backends()
-        if not (pytorch_available or tensorflow_available):
-            raise ImportError("Neither PyTorch nor TensorFlow is installed. Please install one of them.")
+def train_and_evaluate_model():
+    # Load dataset
+    df = load_dataset()
+    if df is None:
+        raise ValueError("Failed to load dataset.")
+    
+    # Split dataset: 80% train, 20% test
+    train_df, test_df = train_test_split(
+        df,
+        test_size=0.2,
+        random_state=42,
+        stratify=df['label']
+    )
 
-        vectorizer = joblib.load(f'{path}vectorizer.pkl')
-        models = {
-            'Logistic Regression': joblib.load(f'{path}Logistic_Regression.pkl'),
-            'Random Forest': joblib.load(f'{path}Random_Forest.pkl'),
-            'XGBoost': joblib.load(f'{path}XGBoost.pkl'),
-            'Ensemble': joblib.load(f'{path}Ensemble.pkl')
-        }
-        transformer_model = pipeline("text-classification", 
-                                  model="distilbert-base-uncased-finetuned-sst-2-english")
-        logger.info("All models loaded successfully")
-        return models, vectorizer, transformer_model
-    except Exception as e:
-        logger.error(f"Error loading models: {e}")
-        st.error(f"Error loading models: {str(e)}. Ensure all model files are in 'models/' and PyTorch or TensorFlow is installed.")
-        return None, None, None
+    train_texts = train_df['text'].values
+    train_labels = train_df['label'].values
+    test_texts = test_df['text'].values
+    test_labels = test_df['label'].values
 
-# Explain predictions
-def explain_prediction(text, model, vectorizer):
-    from lime.lime_text import LimeTextExplainer
-    explainer = LimeTextExplainer(class_names=["True", "Fake"])
-    def predict_prob(texts):
-        return model.predict_proba(vectorizer.transform(texts))
-    exp = explainer.explain_instance(text, predict_prob, num_features=10)
-    return exp.as_list()
+    # Initialize tokenizer and model
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+    model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=2)
 
-# Visualization functions
-def plot_word_cloud(text):
-    wordcloud = WordCloud(width=800, height=400, background_color='white').generate(text)
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.imshow(wordcloud, interpolation='bilinear')
-    ax.axis('off')
-    return fig
+    # Create datasets
+    train_dataset = NewsDataset(train_texts, train_labels, tokenizer)
+    test_dataset = NewsDataset(test_texts, test_labels, tokenizer)
 
-def plot_confusion_matrix(y_true, y_pred):
-    cm = confusion_matrix(y_true, y_pred)
-    fig, ax = plt.subplots(figsize=(6, 6))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=['True', 'Fake'], yticklabels=['True', 'Fake'], ax=ax)
-    ax.set_xlabel('Predicted')
-    ax.set_ylabel('Actual')
-    ax.set_title('Confusion Matrix')
-    return fig
+    # Training arguments
+    training_args = TrainingArguments(
+        output_dir='./results',
+        num_train_epochs=3,
+        per_device_train_batch_size=8,
+        per_device_eval_batch_size=8,
+        warmup_steps=500,
+        weight_decay=0.01,
+        logging_dir='./logs',
+        logging_steps=10,
+        evaluation_strategy='epoch',
+        save_strategy='epoch',
+        load_best_model_at_end=True
+    )
 
-# Main app
+    # Initialize trainer
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=test_dataset,
+        compute_metrics=compute_metrics
+    )
+
+    # Train model
+    trainer.train()
+
+    # Evaluate on test set
+    eval_results = trainer.evaluate()
+    st.write(f"**Test Set Evaluation Results:**")
+    st.write(f"- Accuracy: {eval_results['eval_accuracy']:.4f}")
+    st.write(f"- F1 Score: {eval_results['eval_f1']:.4f}")
+    st.write(f"- Precision: {eval_results['eval_precision']:.4f}")
+    st.write(f"- Recall: {eval_results['eval_recall']:.4f}")
+
+    # Save model and tokenizer
+    model.save_pretrained('./fake_news_model')
+    tokenizer.save_pretrained('./fake_news_model')
+
+    return model, tokenizer, eval_results
+
+# Prediction function
+def predict_fake_news(text, model, tokenizer):
+    # Preprocess input text
+    processed_text = preprocess_text(text)
+    
+    # Tokenize input
+    encoding = tokenizer.encode_plus(
+        processed_text,
+        add_special_tokens=True,
+        max_length=128,
+        return_token_type_ids=False,
+        padding='max_length',
+        truncation=True,
+        return_attention_mask=True,
+        return_tensors='pt'
+    )
+    
+    # Get predictions
+    with torch.no_grad():
+        outputs = model(
+            input_ids=encoding['input_ids'],
+            attention_mask=encoding['attention_mask']
+        )
+        logits = outputs.logits
+        prediction = torch.argmax(logits, dim=1).item()
+    
+    return "Real News" if prediction == 1 else "Fake News"
+
+# Streamlit app
 def main():
-    st.set_page_config(page_title="TruthGuard: Fake News Detection", 
-                      page_icon="🔍", 
-                      layout="wide")
+    st.title("Indian Fake News Detector")
+    st.markdown(
+        """
+        Enter a news article text below to check if it's real or fake.  
+        Built for Indian news context using BERT and NLP with the `news_dataset.csv` dataset.  
+        Trained on 80% of the dataset, evaluated on 20% test set.
+        """
+    )
 
-    # Custom CSS for styling
-    st.markdown("""
-    <style>
-    .main {
-        background-color: #f0f2f6;
-        padding: 20px;
-    }
-    .stButton>button {
-        background-color: #0066cc;
-        color: white;
-        border-radius: 8px;
-        padding: 10px 20px;
-    }
-    .stButton>button:hover {
-        background-color: #0055aa;
-    }
-    .prediction-box {
-        padding: 20px;
-        border-radius: 10px;
-        background-color: white;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        margin: 10px 0;
-    }
-    .sidebar .sidebar-content {
-        background-color: #ffffff;
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    # Train model and cache results
+    try:
+        model, tokenizer, eval_results = train_and_evaluate_model()
+    except Exception as e:
+        st.error(f"Error training model: {e}")
+        return
 
-    # Sidebar
-    with st.sidebar:
-        st.image("https://img.icons8.com/color/96/000000/news.png")
-        st.title("TruthGuard")
-        st.markdown("Advanced Fake News Detection System")
-        st.markdown("---")
-        st.info("Enter a news article to analyze or view dataset visualizations.")
+    # Input text
+    user_input = st.text_area("Enter news article text:", placeholder="Paste the news article here...", height=200)
 
-    # Main content
-    st.title("🔍 TruthGuard: Fake News Detection")
-    st.markdown("Analyze news articles to detect potential fake news using advanced NLP techniques.")
-
-    # Tabs for different sections
-    tab1, tab2 = st.tabs(["Analyze News", "Data Visualizations"])
-
-    with tab1:
-        st.subheader("Enter News Article")
-        news_text = st.text_area("Paste your news article here:", height=200)
-        
-        if st.button("Analyze Article"):
-            if news_text:
-                is_valid, error_msg = validate_input_text(news_text)
-                if not is_valid:
-                    st.error(error_msg)
-                else:
-                    cleaned_text = preprocess_text(news_text)
-                    
-                    # Load models
-                    models, vectorizer, transformer_model = load_models()
-                    
-                    if models and vectorizer and transformer_model:
-                        # Transformer prediction
-                        with st.spinner("Analyzing with Transformer model..."):
-                            result = transformer_model(news_text[:512])[0]
-                            prediction = "Fake" if result['label'] == "NEGATIVE" else "True"
-                            confidence = result['score']
-                        
-                        st.markdown("### Transformer Model Results")
-                        st.markdown(f"<div class='prediction-box'>"
-                                  f"<b>Prediction:</b> {prediction}<br>"
-                                  f"<b>Confidence:</b> {confidence:.2%}"
-                                  f"</div>", unsafe_allow_html=True)
-                        
-                        # Traditional models prediction
-                        st.markdown("### Traditional Models Comparison")
-                        vectorized_text = vectorizer.transform([cleaned_text])
-                        
-                        # Store results for table
-                        results = []
-                        for model_name, model in models.items():
-                            with st.spinner(f"Analyzing with {model_name}..."):
-                                prediction = model.predict(vectorized_text)[0]
-                                proba = model.predict_proba(vectorized_text)[0]
-                                results.append({
-                                    'Model': model_name,
-                                    'Prediction': 'Fake' if prediction == 1 else 'True',
-                                    'Probability (True)': f"{proba[0]:.2%}",
-                                    'Probability (Fake)': f"{proba[1]:.2%}"
-                                })
-                        
-                        # Display results table
-                        st.write("#### Prediction Summary")
-                        results_df = pd.DataFrame(results)
-                        st.dataframe(results_df.style.set_properties(**{'text-align': 'center'}))
-                        
-                        # Detailed results for each model
-                        for model_name, model in models.items():
-                            st.markdown(f"#### {model_name} Results")
-                            prediction = model.predict(vectorized_text)[0]
-                            proba = model.predict_proba(vectorized_text)[0]
-                            st.markdown(f"<div class='prediction-box'>"
-                                      f"<b>Prediction:</b> {'Fake' if prediction == 1 else 'True'}<br>"
-                                      f"<b>Probability (True):</b> {proba[0]:.2%}<br>"
-                                      f"<b>Probability (Fake):</b> {proba[1]:.2%}"
-                                      f"</div>", unsafe_allow_html=True)
-                            
-                            # Explain predictions
-                            st.markdown(f"##### Feature Importance ({model_name})")
-                            with st.spinner(f"Generating explanation for {model_name}..."):
-                                explanation = explain_prediction(cleaned_text, model, vectorizer)
-                                exp_df = pd.DataFrame(explanation, columns=['Feature', 'Weight'])
-                                st.dataframe(exp_df.style.format({'Weight': '{:.3f}'}))
-                        
-                        # Word cloud
-                        st.markdown("### Word Cloud")
-                        fig = plot_word_cloud(cleaned_text)
-                        st.pyplot(fig)
-                    else:
-                        st.error("Error: Could not load models. Ensure all model files (Logistic_Regression.pkl, Random_Forest.pkl, XGBoost.pkl, Ensemble.pkl, vectorizer.pkl) are in the 'models/' directory.")
-            else:
-                st.warning("Please enter a news article to analyze.")
-
-    with tab2:
-        st.subheader("Data Visualizations")
-        st.info("Visualizations generated from the provided dataset.")
-        
-        # Load dataset
-        df = load_dataset()
-        
-        if df is not None:
-            st.write("Dataset Preview")
-            st.dataframe(df.head())
-            
-            if 'subject' in df.columns:
-                st.write("Subject Distribution")
-                fig, ax = plt.subplots(figsize=(10, 4))
-                df['subject'].value_counts().plot(kind='bar', ax=ax)
-                plt.xticks(rotation=45)
-                st.pyplot(fig)
-            
-            if 'date' in df.columns:
-                try:
-                    df['date'] = pd.to_datetime(df['date'], errors='coerce')
-                    if not df['date'].isna().all():
-                        st.write("Articles Over Time")
-                        time_df = df.set_index('date').resample('ME').size()
-                        fig, ax = plt.subplots(figsize=(10, 4))
-                        time_df.plot(ax=ax)
-                        st.pyplot(fig)
-                except:
-                    st.warning("Could not parse date column")
+    # Predict button
+    if st.button("Check News"):
+        if user_input.strip():
+            with st.spinner("Analyzing..."):
+                prediction = predict_fake_news(user_input, model, tokenizer)
+                st.success(f"Prediction: **{prediction}**")
         else:
-            st.error("Error: Could not load dataset. Please ensure 'Fake.csv' and 'True.csv' are in the 'data/' directory.")
+            st.warning("Please enter some text to analyze.")
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
