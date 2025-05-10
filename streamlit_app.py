@@ -1,4 +1,3 @@
-# app.py
 # Indian Fake News Detection Web App using Gradio
 
 import gradio as gr
