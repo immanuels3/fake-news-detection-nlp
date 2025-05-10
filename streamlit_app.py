@@ -73,6 +73,9 @@ class NewsDataset(Dataset):
 
 # Text preprocessing function
 def preprocess_text(text):
+    # Handle non-string inputs (e.g., float, NaN)
+    if not isinstance(text, str) or pd.isna(text):
+        return ""
     # Convert to lowercase
     text = text.lower()
     # Remove URLs
@@ -104,15 +107,31 @@ def load_dataset(uploaded_file):
         st.error("Dataset must contain 'text' and 'label' columns.")
         return None
 
+    # Clean text column: convert to string, handle NaN
+    df['text'] = df['text'].astype(str).replace('nan', '')
+    
+    # Validate labels
+    valid_labels = {'FAKE', 'REAL'}
+    if not df['label'].isin(valid_labels).all():
+        st.error("Label column must contain only 'FAKE' or 'REAL' values.")
+        return None
+
     # Preprocess texts
-    df['text'] = df['text'].apply(preprocess_text)
+    try:
+        df['text'] = df['text'].apply(preprocess_text)
+    except Exception as e:
+        st.error(f"Error preprocessing text: {e}")
+        return None
     
     # Map labels: FAKE=0, REAL=1
     df['label'] = df['label'].map({'FAKE': 0, 'REAL': 1})
+    
+    # Drop rows with empty text after preprocessing
+    df = df[df['text'].str.strip() != '']
     df = df.dropna(subset=['text', 'label'])
     
     if df.empty:
-        st.error("No valid data after preprocessing. Check your dataset.")
+        st.error("No valid data after preprocessing. Ensure 'text' column contains valid strings.")
         return None
     
     return df
@@ -229,6 +248,9 @@ def predict_fake_news(text, model, tokenizer):
     try:
         # Preprocess input text
         processed_text = preprocess_text(text)
+        if not processed_text.strip():
+            st.warning("Input text is empty after preprocessing.")
+            return None
         
         # Tokenize input
         encoding = tokenizer.encode_plus(
@@ -264,7 +286,8 @@ def main():
         Upload the `news_dataset.csv` file (with 'text' and 'label' columns) to train the model.  
         Then, enter a news article text to check if it's real or fake.  
         Built for Indian news context using BERT and NLP.  
-        The model is trained on 80% of the dataset and evaluated on 20%.
+        The model is trained on 80% of the dataset and evaluated on 20%.  
+        **Note**: Ensure the 'text' column contains valid strings and 'label' contains only 'FAKE' or 'REAL'.
         """
     )
 
