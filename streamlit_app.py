@@ -12,7 +12,19 @@ from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 import io
 import warnings
+import streamlit.watcher.local_sources_watcher as watcher
 warnings.filterwarnings('ignore')
+
+# Patch Streamlit's LocalSourcesWatcher to skip torch module
+def patch_watcher():
+    original_get_module_paths = watcher.get_module_paths
+    def safe_get_module_paths(module):
+        if module.__name__.startswith('torch'):
+            return []
+        return original_get_module_paths(module)
+    watcher.get_module_paths = safe_get_module_paths
+
+patch_watcher()
 
 # Download NLTK resources with error handling
 def download_nltk_resources():
@@ -127,12 +139,16 @@ def train_and_evaluate_model(_uploaded_file):
         return None, None, None
     
     # Split dataset: 80% train, 20% test
-    train_df, test_df = train_test_split(
-        df,
-        test_size=0.2,
-        random_state=42,
-        stratify=df['label']
-    )
+    try:
+        train_df, test_df = train_test_split(
+            df,
+            test_size=0.2,
+            random_state=42,
+            stratify=df['label']
+        )
+    except Exception as e:
+        st.error(f"Error splitting dataset: {e}")
+        return None, None, None
 
     train_texts = train_df['text'].values
     train_labels = train_df['label'].values
@@ -140,8 +156,12 @@ def train_and_evaluate_model(_uploaded_file):
     test_labels = test_df['label'].values
 
     # Initialize tokenizer and model
-    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-    model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=2)
+    try:
+        tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=2)
+    except Exception as e:
+        st.error(f"Error initializing model: {e}")
+        return None, None, None
 
     # Create datasets
     train_dataset = NewsDataset(train_texts, train_labels, tokenizer)
@@ -163,58 +183,78 @@ def train_and_evaluate_model(_uploaded_file):
     )
 
     # Initialize trainer
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=test_dataset,
-        compute_metrics=compute_metrics
-    )
+    try:
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=test_dataset,
+            compute_metrics=compute_metrics
+        )
+    except Exception as e:
+        st.error(f"Error initializing trainer: {e}")
+        return None, None, None
 
     # Train model
-    trainer.train()
+    try:
+        trainer.train()
+    except Exception as e:
+        st.error(f"Error training model: {e}")
+        return None, None, None
 
     # Evaluate on test set
-    eval_results = trainer.evaluate()
-    st.write(f"**Test Set Evaluation Results:**")
-    st.write(f"- Accuracy: {eval_results['eval_accuracy']:.4f}")
-    st.write(f"- F1 Score: {eval_results['eval_f1']:.4f}")
-    st.write(f"- Precision: {eval_results['eval_precision']:.4f}")
-    st.write(f"- Recall: {eval_results['eval_recall']:.4f}")
+    try:
+        eval_results = trainer.evaluate()
+        st.write(f"**Test Set Evaluation Results:**")
+        st.write(f"- Accuracy: {eval_results['eval_accuracy']:.4f}")
+        st.write(f"- F1 Score: {eval_results['eval_f1']:.4f}")
+        st.write(f"- Precision: {eval_results['eval_precision']:.4f}")
+        st.write(f"- Recall: {eval_results['eval_recall']:.4f}")
+    except Exception as e:
+        st.error(f"Error evaluating model: {e}")
+        return None, None, None
 
     # Save model and tokenizer
-    model.save_pretrained('./fake_news_model')
-    tokenizer.save_pretrained('./fake_news_model')
+    try:
+        model.save_pretrained('./fake_news_model')
+        tokenizer.save_pretrained('./fake_news_model')
+    except Exception as e:
+        st.error(f"Error saving model: {e}")
+        return None, None, None
 
     return model, tokenizer, eval_results
 
 # Prediction function
 def predict_fake_news(text, model, tokenizer):
-    # Preprocess input text
-    processed_text = preprocess_text(text)
-    
-    # Tokenize input
-    encoding = tokenizer.encode_plus(
-        processed_text,
-        add_special_tokens=True,
-        max_length=128,
-        return_token_type_ids=False,
-        padding='max_length',
-        truncation=True,
-        return_attention_mask=True,
-        return_tensors='pt'
-    )
-    
-    # Get predictions
-    with torch.no_grad():
-        outputs = model(
-            input_ids=encoding['input_ids'],
-            attention_mask=encoding['attention_mask']
+    try:
+        # Preprocess input text
+        processed_text = preprocess_text(text)
+        
+        # Tokenize input
+        encoding = tokenizer.encode_plus(
+            processed_text,
+            add_special_tokens=True,
+            max_length=128,
+            return_token_type_ids=False,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='pt'
         )
-        logits = outputs.logits
-        prediction = torch.argmax(logits, dim=1).item()
-    
-    return "Real News" if prediction == 1 else "Fake News"
+        
+        # Get predictions
+        with torch.no_grad():
+            outputs = model(
+                input_ids=encoding['input_ids'],
+                attention_mask=encoding['attention_mask']
+            )
+            logits = outputs.logits
+            prediction = torch.argmax(logits, dim=1).item()
+        
+        return "Real News" if prediction == 1 else "Fake News"
+    except Exception as e:
+        st.error(f"Error making prediction: {e}")
+        return None
 
 # Streamlit app
 def main():
@@ -260,7 +300,8 @@ def main():
             if user_input.strip():
                 with st.spinner("Analyzing..."):
                     prediction = predict_fake_news(user_input, st.session_state.model, st.session_state.tokenizer)
-                    st.success(f"Prediction: **{prediction}**")
+                    if prediction:
+                        st.success(f"Prediction: **{prediction}**")
             else:
                 st.warning("Please enter some text to analyze.")
     else:
