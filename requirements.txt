@@ -1,6 +1,6 @@
 gradio
 pandas
-numpy==1.24.4
+numpy==2.0.2
 regex
 joblib
 matplotlib
